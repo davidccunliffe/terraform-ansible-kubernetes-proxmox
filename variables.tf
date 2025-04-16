@@ -7,7 +7,7 @@ variable "proxmox_api_token_id" {
 }
 
 variable "proxmox_api_token_secret" {
-  type = string
+  type      = string
   sensitive = true
 }
 
@@ -16,7 +16,7 @@ variable "ci_user" {
 }
 
 variable "ci_password" {
-  type = string
+  type      = string
   sensitive = true
 }
 
@@ -30,6 +30,6 @@ variable "ci_ssh_private_key" {
 
 
 variable "vm_count" {
-  type = number
-  default = 2
+  type    = number
+  default = 4
 }

@@ -2,3 +2,8 @@
 .terraform.lock.hcl  
 terraform.tfstate*
 terraform.tfvars
+.ansible
+.vscode
+kubeconfig
+inventory.ini
+mbp*

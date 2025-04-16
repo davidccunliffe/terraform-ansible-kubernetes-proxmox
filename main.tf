@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     proxmox = {
-      source = "Telmate/proxmox"
+      source  = "Telmate/proxmox"
       version = "3.0.1-rc3"
     }
   }
@@ -9,35 +9,35 @@ terraform {
 
 resource "proxmox_vm_qemu" "k8s-master" {
   name        = "k8s-master"
-  target_node = "proxmox"
-  vmid       = 300
-  clone      = "ubuntu-template"
-  full_clone = true
+  target_node = "pve3"
+  vmid        = 300
+  clone       = "ubuntu-k8s-cloudinit"
+  full_clone  = true
 
-  ciuser    = var.ci_user
+  ciuser     = var.ci_user
   cipassword = var.ci_password
-  sshkeys   = file(var.ci_ssh_public_key)
+  sshkeys    = file(var.ci_ssh_public_key)
 
-  agent     = 1
-  cores     = 2
-  memory    = 2048
-  os_type   = "cloud-init"
-  bootdisk  = "scsi0"
-  scsihw    = "virtio-scsi-pci"
+  agent    = 1
+  cores    = 4
+  memory   = 8096
+  os_type  = "cloud-init"
+  bootdisk = "scsi0"
+  scsihw   = "virtio-scsi-pci"
 
   disks {
     ide {
       ide0 {
         cloudinit {
-          storage = "local"
+          storage = "ugreen"
         }
       }
     }
     scsi {
       scsi0 {
         disk {
-          size    = 10
-          storage = "local"
+          size    = 64
+          storage = "ugreen"
         }
       }
     }
@@ -48,11 +48,11 @@ resource "proxmox_vm_qemu" "k8s-master" {
     bridge = "vmbr0"
   }
 
-  boot     = "order=scsi0"
+  boot      = "order=scsi0"
   ipconfig0 = "ip=dhcp"
-  
+
   lifecycle {
-    ignore_changes = [ 
+    ignore_changes = [
       network
     ]
   }
@@ -61,35 +61,35 @@ resource "proxmox_vm_qemu" "k8s-master" {
 resource "proxmox_vm_qemu" "k8s-workers" {
   count       = var.vm_count
   name        = "k8s-worker-${count.index + 1}"
-  target_node = "proxmox"
+  target_node = "pve4"
   vmid        = 301 + count.index
-  clone       = "ubuntu-template"
+  clone       = "ubuntu-k8s-cloudinit"
   full_clone  = true
 
-  ciuser    = var.ci_user
+  ciuser     = var.ci_user
   cipassword = var.ci_password
-  sshkeys   = file(var.ci_ssh_public_key)
+  sshkeys    = file(var.ci_ssh_public_key)
 
-  agent     = 1
-  cores     = 2
-  memory    = 2048
-  os_type   = "cloud-init"
-  bootdisk  = "scsi0"
-  scsihw    = "virtio-scsi-pci"
+  agent    = 1
+  cores    = 4
+  memory   = 8096
+  os_type  = "cloud-init"
+  bootdisk = "scsi0"
+  scsihw   = "virtio-scsi-pci"
 
   disks {
     ide {
       ide0 {
         cloudinit {
-          storage = "local"
+          storage = "ugreen"
         }
       }
     }
     scsi {
       scsi0 {
         disk {
-          size    = 10
-          storage = "local"
+          size    = 64
+          storage = "ugreen"
         }
       }
     }
@@ -100,11 +100,11 @@ resource "proxmox_vm_qemu" "k8s-workers" {
     bridge = "vmbr0"
   }
 
-  boot     = "order=scsi0"
+  boot      = "order=scsi0"
   ipconfig0 = "ip=dhcp"
-  
+
   lifecycle {
-    ignore_changes = [ 
+    ignore_changes = [
       network
     ]
   }
@@ -144,8 +144,8 @@ EOT
 
 
 resource "null_resource" "ansible_playbook" {
-    depends_on = [local_file.create_ansible_inventory]
-    provisioner "local-exec" {
-        command = "sleep 60;ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./inventory.ini playbook-create-k8s-cluster.yml -u ${var.ci_user}"
-    }
+  depends_on = [local_file.create_ansible_inventory]
+  provisioner "local-exec" {
+    command = "sleep 60;ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ./inventory.ini playbook-create-k8s-cluster.yml -u ${var.ci_user}"
+  }
 }

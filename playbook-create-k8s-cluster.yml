@@ -1,235 +1,240 @@
 ---
-- name: Setup K8s Cluster
+- name: Setup Kubernetes Cluster on Ubuntu 24.04 (Noble)
   hosts:
-  - master-node
-  - worker-node
-  become: yes
+    - master-node
+    - worker-node
+  become: true
+  vars:
+    docker_gpg_key_url: https://download.docker.com/linux/ubuntu/gpg
+    k8s_gpg_key_url: https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key
+    pause_image_version: "3.10"
+    k8s_repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /"
+
   tasks:
-  - name: Disable swap
-    command: swapoff -a
+    - name: Disable swap
+      ansible.builtin.command: swapoff -a
 
-  - name: Remove swap entry from /etc/fstab
-    lineinfile:
-      path: /etc/fstab
-      regexp: '^(?i)\S+\s+\S+\s+swap'  # Case-insensitive matching for "swap" in the third column
-      state: absent
-      
-  - name: Load Kernel Modules
-    copy:
-      dest: /etc/modules-load.d/k8s.conf
-      content: |
-        overlay
-        br_netfilter
+    - name: Remove swap entry from fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^\S+\s+\S+\s+swap\s+'
+        state: absent
 
-  - name: Load overlay and br_netfilter modules
-    command: modprobe {{ item }}
-    loop:
-    - overlay
-    - br_netfilter
+    - name: Load kernel modules for Kubernetes
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          overlay
+          br_netfilter
 
-  - name: Set sysctl parameters for Kubernetes
-    copy:
-      dest: /etc/sysctl.d/k8s.conf
-      content: |
-        net.bridge.bridge-nf-call-ip6tables = 1
-        net.bridge.bridge-nf-call-iptables = 1
-        net.ipv4.ip_forward = 1
+    - name: Load overlay and br_netfilter modules
+      ansible.builtin.command: modprobe {{ item }}
+      loop:
+        - overlay
+        - br_netfilter
 
-  - name: Apply sysctl settings
-    command: sysctl --system
+    - name: Set sysctl parameters for Kubernetes
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
 
-  - name: Update package index and install required packages
-    apt:
-      update_cache: yes
-      name:
-      - ca-certificates
-      - curl
-      - gpg
-      state: present
+    - name: Apply sysctl settings
+      ansible.builtin.command: sysctl --system
 
-  - name: Create directory for Docker GPG key
-    file:
-      path: /etc/apt/keyrings
-      state: directory
-      mode: '0755'
+    - name: Install dependencies
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+        update_cache: true
 
-  - name: Add Docker's official GPG key
-    get_url:
-      url: https://download.docker.com/linux/ubuntu/gpg
-      dest: /etc/apt/keyrings/docker.asc
-      mode: '0644'
+    - name: Create keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
 
-  - name: Get the architecture
-    command: dpkg --print-architecture
-    register: dpkg_arch
+    - name: Add Docker GPG key
+      ansible.builtin.get_url:
+        url: "{{ docker_gpg_key_url }}"
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
 
-  - name: Remove stale lock files
-    shell: rm -rf /var/lib/apt/lists/lock;rm -rf /var/cache/apt/archives/lock;rm -rf
-      /var/lib/dpkg/lock*
+    - name: Add Docker APT repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable"
+        filename: docker
+        state: present
 
-  - name: Add Docker repository
-    apt_repository:
-      repo: "deb [arch={{ dpkg_arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc]
-        https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }}
-        stable"
-      filename: docker
-      state: present
+    - name: Install Docker and containerd
+      ansible.builtin.apt:
+        update_cache: true
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
 
-  - name: Remove stale lock files
-    shell: rm -rf /var/lib/apt/lists/lock;rm -rf /var/cache/apt/archives/lock;rm -rf
-      /var/lib/dpkg/lock*
+    - name: Add user to docker group
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
 
-  - name: Install Docker and Containerd
-    apt:
-      update_cache: yes
-      name:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-buildx-plugin
-      - docker-compose-plugin
-      state: present
+    - name: Enable and start Docker services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - docker
+        - containerd
 
-  - name: Add user to docker group
-    user:
-      name: "{{ ansible_user }}"
-      groups: docker
-      append: yes
+    - name: Configure containerd to use systemd cgroup driver and set pause image
+      ansible.builtin.shell: |
+        containerd config default | \
+        sed 's/SystemdCgroup = false/SystemdCgroup = true/' | \
+        sed 's|sandbox_image = "registry.k8s.io/pause:.*"|sandbox_image = "registry.k8s.io/pause:{{ pause_image_version }}"|' \
+        > /etc/containerd/config.toml
 
-  - name: Enable and start Docker services
-    systemd:
-      name: "{{ item }}"
-      enabled: true
-      state: started
-    loop:
-    - docker.service
-    - containerd.service
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
 
-  - name: Configure cgroups to --> systemd
-    shell: containerd config default | sed 's/SystemdCgroup = false/SystemdCgroup = true/' | sed 's/sandbox_image = "registry.k8s.io\/pause:[^"]*"/sandbox_image = "registry.k8s.io\/pause:3.10"/' | sudo tee /etc/containerd/config.toml
+    - name: Add Kubernetes GPG key
+      ansible.builtin.get_url:
+        url: "{{ k8s_gpg_key_url }}"
+        dest: /tmp/kubernetes-release.key
 
-  - name: Restart Containerd
-    systemd:
-      name: containerd
-      state: restarted
+    - name: Install Kubernetes keyring
+      ansible.builtin.command: gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-release.key
 
-  - name: Remove old Kubernetes repository and GPG
-    file:
-      path: "{{ item }}"
-      state: absent
-    loop:
-    - /etc/apt/sources.list.d/kubernetes.list
-    - /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-    - /tmp/kubernetes-release.key
+    - name: Add Kubernetes APT repo
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        content: "{{ k8s_repo }}"
 
-  - name: Download Kubernetes GPG Key
-    get_url:
-      url: https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key
-      dest: /tmp/kubernetes-release.key
+    - name: Install Kubernetes components
+      ansible.builtin.apt:
+        update_cache: true
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
 
-  - name: Add Kubernetes GPG Key
-    command: gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-      /tmp/kubernetes-release.key
+    - name: Hold Kubernetes components
+      ansible.builtin.command: apt-mark hold kubelet kubeadm kubectl
 
-  - name: Remove temporary GPG key file
-    file:
-      path: /tmp/kubernetes-release.key
-      state: absent
+    - name: Enable kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+        state: started
 
-  - name: Add Kubernetes Repository
-    copy:
-      dest: /etc/apt/sources.list.d/kubernetes.list
-      content: 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg]
-        https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /'
-
-  - name: Remove stale lock files
-    shell: rm -rf /var/lib/apt/lists/lock;rm -rf /var/cache/apt/archives/lock;rm -rf
-      /var/lib/dpkg/lock*
-
-  - name: Install Kubernetes Packages
-    apt:
-      update_cache: yes
-      name:
-      - kubelet
-      - kubeadm
-      - kubectl
-      state: present
-
-  - name: Mark Kubernetes Packages as held
-    command: apt-mark hold kubelet kubeadm kubectl
-
-  - name: Enable kubelet service
-    systemd:
-      name: kubelet
-      state: started
-      enabled: true
-
-- name: Initialization of control-plane (master-node)
+- name: Initialize Kubernetes Control Plane
   hosts: master-node
-  become: yes
+  become: true
   tasks:
-  - name: Initialize Kubernetes master-node
-    command: kubeadm init --pod-network-cidr=10.244.0.0/16
-      --apiserver-advertise-address={{ ansible_host }}
-    register: kubeadm_init_result
-    ignore_errors: yes
+    - name: Initialize Kubernetes master
+      ansible.builtin.command: kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address={{ ansible_host }}
+      register: kubeadm_init
+      ignore_errors: true
 
-  - name: Get join command
-    command: kubeadm token create --print-join-command
-    register: kubeadm_join_command_raw
+    - name: Extract kubeadm join command
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: kubeadm_join_command
 
-  - name: set join command
-    set_fact:
-      kubeadm_join_command: "{{ kubeadm_join_command_raw.stdout }}"
+    - name: Save join command to a file
+      ansible.builtin.copy:
+        dest: /tmp/join_command.txt
+        content: "{{ kubeadm_join_command.stdout }}"
 
-  - name: Save join command to file
-    copy:
-      dest: /tmp/join_command.txt
-      content: "{{ kubeadm_join_command }}"
+    - name: Fetch join command to control node
+      ansible.builtin.fetch:
+        src: /tmp/join_command.txt
+        dest: /tmp/join_command.txt
+        flat: true
 
-  - name: Save join command to a file
-    copy:
-      content: "{{ kubeadm_join_command }}"
-      dest: /tmp/join_command.txt
-
-  - name: Fetch join command to host
-    fetch:
-      src: /tmp/join_command.txt
-      dest: /tmp/join_command.txt
-      flat: yes
-
-  - name: Check if kubeadm init was successful or already run
-    set_fact:
-      kubeadm_initialized: "{{ kubeadm_init_result.rc == 0 }}"
-
-  - name: Skip initialization if already done
-    debug:
-      msg: "Kubernetes master-node already initialized, skipping."
-    when: kubeadm_initialized
-
-- name: Finishing Initialization of control-plane (master-node)
+- name: Set up kubectl config on master-node
   hosts: master-node
+  become: true
   tasks:
-  - name: Create .kube directory
-    file:
-      path: ".kube"
-      state: directory
-      mode: '0755'
+    - name: Create kube config dir
+      ansible.builtin.file:
+        path: /home/{{ ansible_user }}/.kube
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
 
-  - name: Copy admin.conf to .kube/config
-    command: sudo cp -f /etc/kubernetes/admin.conf .kube/config
+    - name: Copy admin.conf to user config
+      ansible.builtin.copy:
+        remote_src: true
+        src: /etc/kubernetes/admin.conf
+        dest: /home/{{ ansible_user }}/.kube/config
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
 
-  - name: Change ownership of .kube/config
-    command: sudo chown {{ ansible_user }}:{{ ansible_user }} .kube/config
-
-- name: Configure worker-nodes to join
+- name: Join Worker Nodes to Cluster
   hosts: worker-node
-  become: yes
+  become: true
   tasks:
-  - name: Copy join command to worker-node
-    copy:
-      src: /tmp/join_command.txt
-      dest: /tmp/
+    - name: Copy join command to worker nodes
+      ansible.builtin.copy:
+        src: /tmp/join_command.txt
+        dest: /tmp/join_command.txt
 
-  - name: join cluster
-    shell: "cat /tmp/join_command.txt | bash"
+    - name: Join the cluster
+      ansible.builtin.shell: bash /tmp/join_command.txt
+
+- name: Deploy Calico CNI plugin
+  hosts: master-node
+  become: true
+  vars:
+    calico_manifest: https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+  tasks:
+    - name: Wait for Kubernetes API to be ready
+      uri:
+        url: https://localhost:6443/healthz
+        method: GET
+        validate_certs: no
+      register: result
+      retries: 10
+      delay: 15
+      until: result.status == 200
+
+    - name: Apply Calico CNI manifest
+      command: >
+        kubectl apply --validate=false -f {{ calico_manifest }}
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+
+- name: Copy kubeconfig to Ansible control host
+  hosts: master-node
+  become: true
+  tasks:
+    - name: Ensure kubeconfig is readable by user
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/{{ ansible_user }}/admin.conf
+        remote_src: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+
+    - name: Fetch kubeconfig to local host
+      ansible.builtin.fetch:
+        src: /home/{{ ansible_user }}/admin.conf
+        dest: ./kubeconfig/k8s-admin.conf
+        flat: true
